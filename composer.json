@@ -1,0 +1,25 @@
+{
+    "name": "ozaretskii/php-snake-mqp",
+    "description": "PHP async messages queue and execution library",
+    "type": "library",
+    "license": "BSD-3",
+    "autoload": {
+        "psr-4": {
+            "Ozaretskii\\PhpSnakeMqp\\": "src/"
+        }
+    },
+    "minimum-stability": "stable",
+    "authors": [
+        {
+            "name": "Oleksandr Zaretskyi",
+            "email":  "al.zaretskii@gmail.com"
+        }
+    ],
+    "require-dev": {
+        "opis/closure": "^3.1"
+    },
+    "require": {
+        "php": ">=5.6",
+        "ext-mysqli": "*"
+    }
+}
