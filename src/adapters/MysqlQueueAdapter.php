@@ -18,12 +18,12 @@ class MysqlQueueAdapter implements QueueAdapterInterface
     public function __construct($args)
     {
         $this->connection = new mysqli(
-            $args['host'],
-            $args['user'],
-            $args['password'],
-            $args['database'],
-            $args['port'],
-            $args['socket']
+            isset($args['host']) ? $args['host'] : null,
+            isset($args['user']) ? $args['user'] : null,
+            isset($args['password']) ? $args['password'] : null,
+            isset($args['database']) ? $args['database'] : null,
+            isset($args['port']) ? $args['port'] : null,
+            isset($args['socket']) ? $args['socket'] : null
         );
     }
 
@@ -270,7 +270,7 @@ class MysqlQueueAdapter implements QueueAdapterInterface
      */
     public function prepare()
     {
-        $sql = "CREATE TABLE IF NOT EXISTS `jobinqueue` (
+        $sql = "CREATE TABLE IF NOT EXISTS `task_queue` (
           `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
           `job_classname` text DEFAULT NULL,
           `arguments` longtext DEFAULT NULL,
