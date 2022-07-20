@@ -15,6 +15,7 @@ class JobInQueue
     public $queue;
     public $createdAt;
     public $delay = null;
+    public $printedOutput = null;
     public $result = null;
     public $startedAt = null;
     public $finishedAt = null;

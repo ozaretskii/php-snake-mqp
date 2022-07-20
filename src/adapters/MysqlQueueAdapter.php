@@ -49,14 +49,20 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         return $stmt->execute() ? $stmt->insert_id : false;
     }
 
-    public function status($messageId)
+    public function getMessage($messageId)
     {
         $stmt = $this->connection->prepare("SELECT status FROM `task_queue` WHERE id=?");
         $stmt->bind_param('i', $messageId);
         $stmt->execute();
         $result = $stmt->get_result();
-        $data = $result->fetch_assoc();
-        return $data ? $data['id'] : false;
+        $rawData = $result->fetch_assoc();
+        return $rawData ? static::prepareRow($rawData) : null;
+    }
+
+    public function status($messageId)
+    {
+        $data = $this->getMessage($messageId);
+        return $data ? $data->status : false;
     }
 
     public function remove($messageId)
@@ -73,15 +79,15 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         return $this->connection->prepare("DELETE FROM `task_queue`")->execute();
     }
 
-    public function getMessagesFromQueue($count = 1, $maxPriority = null, $jobClassName = null)
+    public function getMessagesFromQueue($count = 1, $maxPriority = null, $queue = null)
     {
-        return static::prepareRows($this->fetchMessagesFromQueue($count, '*', $maxPriority, $jobClassName));
+        return static::prepareRows($this->fetchMessagesFromQueue($count, '*', $maxPriority, $queue));
     }
 
-    public function getMessagesForProcessAndLock($count = 1, $maxPriority = null, $jobClassName = null)
+    public function getMessagesForProcessAndLock($count = 1, $maxPriority = null, $queue = null)
     {
         $this->connection->begin_transaction();
-        $rawData = $this->fetchMessagesFromQueue($count, '*', $maxPriority, $jobClassName, true);
+        $rawData = $this->fetchMessagesFromQueue($count, '*', $maxPriority, $queue, true);
         $ids = array_column($rawData, 'id');
         if (empty($ids)) {
             $this->connection->rollback();
@@ -98,7 +104,7 @@ class MysqlQueueAdapter implements QueueAdapterInterface
     }
 
 
-    public function updateMessageStatus($jobId, $status, $result = null)
+    public function updateMessageStatus($jobId, $status, $result = null, $out = null)
     {
         $sql = 'UPDATE `task_queue` SET status=?';
         $paramsType = 'i';
@@ -107,6 +113,11 @@ class MysqlQueueAdapter implements QueueAdapterInterface
             $sql .= ', result=?';
             $paramsType .= 's';
             $params[] = serialize($result);
+        }
+        if ($out !== null) {
+            $sql .= ', printed_output=?';
+            $paramsType .= 's';
+            $params[] = $out;
         }
 
         switch ($status) {
@@ -170,16 +181,18 @@ class MysqlQueueAdapter implements QueueAdapterInterface
 
     protected static function encodeArgs($args)
     {
+        // @todo implement encoding/decoding for sensitive data
         if ($args instanceof \Closure) {
             $args = new SerializableClosure($args);
         }
 
-        return base64_encode(serialize($args));
+        return serialize($args);
     }
 
     protected static function decodeArgs($value)
     {
-        $data = unserialize(base64_encode($value));
+        // @todo implement encoding/decoding for sensitive data
+        $data = unserialize($value);
         if ($data instanceof SerializableClosure) {
             return $data->getClosure();
         }
@@ -203,6 +216,7 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         $obj->queue = $row['queue'];
         $obj->delay = $row['delay'];
         $obj->result = $row['result'] ? unserialize($row['result']) : null;
+        $obj->printedOutput = $row['printed_output'];
         $obj->createdAt = $row['created_at'];
         $obj->startedAt = $row['started_at'];
         $obj->finishedAt = $row['finished_at'];
@@ -219,7 +233,7 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         return array_map('static::prepareRow', $rows);
     }
 
-    private function fetchMessagesFromQueue($count, $select = '*', $maxPriority = null, $jobClassName = null, $selectForUpdate = false)
+    private function fetchMessagesFromQueue($count, $select = '*', $maxPriority = null, $queue = null, $selectForUpdate = false)
     {
         $sql = "SELECT $select FROM `task_queue`
           WHERE ( (`status`=?) or (`status`=?) ) AND ( (`delay` is null) or (UNIX_TIMESTAMP(NOW()) >= (`delay` + `created_at`)) )";
@@ -235,10 +249,10 @@ class MysqlQueueAdapter implements QueueAdapterInterface
             $params[] = $maxPriority;
         }
 
-        if ($jobClassName) {
-            $sql .= ' AND `job_classname` LIKE ?';
+        if ($queue) {
+            $sql .= ' AND `queue` LIKE ?';
             $paramsType .= 's';
-            $params[] = $jobClassName;
+            $params[] = $queue;
         }
 
         $sql .= ' ORDER BY priority ASC, id ASC';
@@ -263,6 +277,18 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         return $rawData;
     }
 
+
+    public function closeConnection()
+    {
+        return $this->connection->close();
+    }
+
+
+    public static function getTableName()
+    {
+        return 'task_queue';
+    }
+
     /**
      * Creating a system table inside working database
      *
@@ -279,6 +305,7 @@ class MysqlQueueAdapter implements QueueAdapterInterface
           `delay` int(11) DEFAULT NULL,
           `status` int(11) DEFAULT NULL,
           `result` longtext DEFAULT NULL,
+          `printed_output` longtext DEFAULT NULL,
           `queue` varchar(100) DEFAULT NULL,
           `created_at` int(11) DEFAULT NULL,
           `started_at` int(11) DEFAULT NULL,
