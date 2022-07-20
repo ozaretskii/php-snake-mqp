@@ -2,7 +2,7 @@
     "name": "ozaretskii/php-snake-mqp",
     "description": "PHP async messages queue and execution library",
     "type": "library",
-    "license": "BSD-3",
+    "license": "BSD-3-Clause",
     "autoload": {
         "psr-4": {
             "Ozaretskii\\PhpSnakeMqp\\": "src/"
