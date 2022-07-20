@@ -3,6 +3,7 @@
 namespace Ozaretskii\PhpSnakeMqp;
 
 use Ozaretskii\PhpSnakeMqp\adapters\QueueAdapterInterface;
+use Ozaretskii\PhpSnakeMqp\objects\JobInQueue;
 
 class SnakeClient
 {
@@ -15,7 +16,7 @@ class SnakeClient
     // @todo implement later
     // const STATUS_PAUSED = 7;
 
-    /** @var QueueAdapterInterface  */
+    /** @var QueueAdapterInterface */
     protected $adapter;
 
     public function __construct(QueueAdapterInterface $adapter)
@@ -26,8 +27,9 @@ class SnakeClient
     /**
      * Placing a job into the queue.
      *
-     * @param string|array $jobClassName Class name of job
+     * @param callable $jobClassName Class name of job
      * @param array $attributes Attributes to make job context
+     * @param array $systemAttributes Reserved for extending by each specific framework needs
      * @param int $priority Priority of execution
      * @param int|null $delay Delay in seconds
      * @param string $queue Queue name
@@ -37,11 +39,13 @@ class SnakeClient
     public function addQueue(
         $jobClassName,
         $attributes = [],
+        $systemAttributes = [],
         $priority = 1024,
         $delay = null,
         $queue = 'default'
-    ) {
-        return $this->adapter->addQueue($jobClassName, $attributes, $priority, $delay, $queue);
+    )
+    {
+        return $this->adapter->addQueue($jobClassName, $attributes, $systemAttributes, $priority, $delay, $queue);
     }
 
 
@@ -65,7 +69,7 @@ class SnakeClient
      * @param string|null $jobClassName
      * @param int|null $maxPriority
      *
-     * @return mixed
+     * @return JobInQueue[]
      */
     public function getMessagesFromQueue($count = 1, $maxPriority = null, $jobClassName = null)
     {
@@ -80,7 +84,7 @@ class SnakeClient
      * @param string|null $jobClassName
      * @param int|null $maxPriority
      *
-     * @return mixed
+     * @return JobInQueue[]
      */
     public function getMessagesForProcessAndLock($count = 1, $maxPriority = null, $jobClassName = null)
     {
@@ -117,7 +121,7 @@ class SnakeClient
      *
      * @param $status
      *
-     * @return array
+     * @return JobInQueue[]
      */
     public function getJobsWithStatus($status)
     {
@@ -135,5 +139,97 @@ class SnakeClient
     public function getCountJobsWithStatus($status)
     {
         return $this->adapter->countJobsWithStatus($status);
+    }
+
+    /**
+     * CLI daemon that is listening the queue and processing tasks when they are presented
+     *
+     * @param $sleepWhenNoJobs
+     * @param $maxPriority
+     * @param $output
+     * @return mixed
+     */
+    public function runCliJobsDaemon($sleepWhenNoJobs = 15, $maxPriority = null, $output = true)
+    {
+        while (true) {
+            // execute task from queue
+            $jobs = $this->processJobsInQueue(1, $maxPriority);
+            if ($output) {
+                // print output if necessary
+                array_map(function ($job) {
+                    $message = $job->isSuccessful() ? ' has finished successfully' : ' has Failed!';
+                    var_dump("Job [$job->id]" . $message);
+                }, $jobs);
+            }
+            if (
+                count($jobs) <= 0
+                && $sleepWhenNoJobs
+            ) {
+                // sleep in case of no active jobs to prevent unnecessary high load on hardware
+                sleep($sleepWhenNoJobs);
+            }
+        }
+    }
+
+    /**
+     * Pick messages from queue and process them
+     *
+     * @param $count
+     * @param $maxPriority
+     * @return JobInQueue[]
+     */
+    public function processJobsInQueue($count = 1, $maxPriority = null)
+    {
+        $result = [];
+        foreach ($this->adapter->getMessagesForProcessAndLock($count, $maxPriority) as $job) {
+            $result[$job->id] = $this->processJobInQueue($job);
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param JobInQueue $job
+     * @return JobInQueue
+     */
+    protected function processJobInQueue(JobInQueue $job)
+    {
+        // support of PHP >= 7.0
+        if (interface_exists('Throwable', false)) {
+            try {
+                $job->status = static::STATUS_SUCCESS;
+                $job->result = $this->executeJob($job);
+            } catch (\Throwable $e) {
+                $this->adapter->updateMessageStatus($job->id, static::STATUS_FAILURE, $e);
+                $job->status = static::STATUS_FAILURE;
+                $job->result = $e;
+            }
+        } else {
+            try {
+                $job->status = static::STATUS_SUCCESS;
+                $job->result = $this->executeJob($job);
+            } catch (\Exception $e) {
+                $this->adapter->updateMessageStatus($job->id, static::STATUS_FAILURE, $e);
+                $job->status = static::STATUS_FAILURE;
+                $job->result = $e;
+            }
+        }
+
+        return $job;
+    }
+
+    /**
+     * May be overridden to cover extended framework needs
+     *
+     * @param $job
+     * @return mixed
+     */
+    protected function executeJob($job)
+    {
+        $this->adapter->updateMessageStatus($job->id, static::STATUS_STARTED);
+        $result = call_user_func_array($job->className, $job->arguments);
+        $this->adapter->updateMessageStatus($job->id, static::STATUS_SUCCESS, $result);
+
+        return $result;
     }
 }

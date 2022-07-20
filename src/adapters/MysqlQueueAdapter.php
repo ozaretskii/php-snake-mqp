@@ -4,6 +4,7 @@ namespace Ozaretskii\PhpSnakeMqp\adapters;
 
 use mysqli;
 use Opis\Closure\SerializableClosure;
+use Ozaretskii\PhpSnakeMqp\objects\JobInQueue;
 use Ozaretskii\PhpSnakeMqp\SnakeClient;
 
 class MysqlQueueAdapter implements QueueAdapterInterface
@@ -26,7 +27,7 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         );
     }
 
-    public function addQueue($jobClassName, array $attributes = [], $priority = 1024, $delay = null, $queue = 'default')
+    public function addQueue($jobClassName, $attributes = [], $systemAttributes = [], $priority = 1024, $delay = null, $queue = 'default')
     {
         $stmt = $this->connection->prepare(
             "INSERT INTO `task_queue`(job_classname, arguments, system_arguments, priority, delay, status, queue, created_at)
@@ -36,8 +37,9 @@ class MysqlQueueAdapter implements QueueAdapterInterface
             'sssiiis',
             ...[
                 static::encodeArgs($jobClassName),
+                // @todo do not encode to base64, because it has max string size limit
                 static::encodeArgs($attributes),
-                static::encodeArgs($jobClassName),
+                static::encodeArgs($systemAttributes),
                 $priority,
                 intval($delay),
                 SnakeClient::STATUS_PENDING,
@@ -96,15 +98,15 @@ class MysqlQueueAdapter implements QueueAdapterInterface
     }
 
 
-    public function updateMessageStatus($jobId, $status, $result = false)
+    public function updateMessageStatus($jobId, $status, $result = null)
     {
         $sql = 'UPDATE `task_queue` SET status=?';
         $paramsType = 'i';
         $params = [$status];
-        if ($result !== false) {
+        if ($result !== null) {
             $sql .= ', result=?';
             $paramsType .= 's';
-            $params[] = $result;
+            $params[] = serialize($result);
         }
 
         switch ($status) {
@@ -185,15 +187,33 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         return $data;
     }
 
+    /**
+     * @param array $row
+     * @return JobInQueue
+     */
     protected static function prepareRow($row)
     {
-        $row['job_classname'] = static::decodeArgs($row['job_classname']);
-        $row['system_arguments'] = static::decodeArgs($row['system_arguments']);
-        $row['arguments'] = static::decodeArgs($row['arguments']);
+        $obj = new JobInQueue();
+        $obj->id = $row['id'];
+        $obj->status = $row['status'];
+        $obj->className = static::decodeArgs($row['job_classname']);
+        $obj->arguments = static::decodeArgs($row['arguments']);
+        $obj->systemArguments = static::decodeArgs($row['system_arguments']);
+        $obj->priority = $row['priority'];
+        $obj->queue = $row['queue'];
+        $obj->delay = $row['delay'];
+        $obj->result = $row['result'] ? unserialize($row['result']) : null;
+        $obj->createdAt = $row['created_at'];
+        $obj->startedAt = $row['started_at'];
+        $obj->finishedAt = $row['finished_at'];
 
-        return $row;
+        return $obj;
     }
 
+    /**
+     * @param $rows
+     * @return JobInQueue[]
+     */
     protected static function prepareRows($rows)
     {
         return array_map('static::prepareRow', $rows);
@@ -241,5 +261,35 @@ class MysqlQueueAdapter implements QueueAdapterInterface
         $result->free();
 
         return $rawData;
+    }
+
+    /**
+     * Creating a system table inside working database
+     *
+     * @return bool
+     */
+    public function prepare()
+    {
+        $sql = "CREATE TABLE IF NOT EXISTS `jobinqueue` (
+          `id` int(11) UNSIGNED NOT NULL AUTO_INCREMENT,
+          `job_classname` text DEFAULT NULL,
+          `arguments` longtext DEFAULT NULL,
+          `system_arguments` longtext DEFAULT NULL,
+          `priority` int(11) DEFAULT NULL,
+          `delay` int(11) DEFAULT NULL,
+          `status` int(11) DEFAULT NULL,
+          `result` longtext DEFAULT NULL,
+          `queue` varchar(100) DEFAULT NULL,
+          `created_at` int(11) DEFAULT NULL,
+          `started_at` int(11) DEFAULT NULL,
+          `finished_at` int(11) DEFAULT NULL,
+
+          PRIMARY KEY (`id`),
+          KEY `queue` (`queue`),
+          KEY `priority` (`priority`),
+          KEY `status` (`status`),
+          KEY `created_at` (`created_at`)
+        )";
+        return (bool)$this->connection->query($sql);
     }
 }
